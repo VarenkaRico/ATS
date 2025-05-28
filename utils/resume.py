@@ -11,18 +11,9 @@ import tempfile
 from PyPDF2 import PdfReader
 
 from io import BytesIO
+from utils.logger import log_event
 # ==== AWS CONFIG ====
-
-session = boto3.Session(profile_name=os.getenv("AWS_PROFILE", "default"))
-print(f"Using AWS profile: {os.getenv('AWS_PROFILE', 'default')}")
-#session = boto3.Session(profile_name="recruitment-assistant")
-s3 = session.client("s3")
-bedrock = session.client("bedrock-runtime")
-
-#S3_BUCKET = 'recruitment-agent-vrnk'
-S3_BUCKET = os.getenv("S3_BUCKET", "default")
-# ==== JOB DESCRIPTION STEP ====
-MODEL_ID = "amazon.nova-lite-v1:0"
+from utils.aws_clients import s3, bedrock, S3_BUCKET, MODEL_NOVA, MODEL_TITAN_EMBED
 
 def extract_resume_sections(resume_text):
     messages = [
@@ -55,11 +46,16 @@ def extract_resume_sections(resume_text):
 
     try:
         response = bedrock.invoke_model(
-        modelId=MODEL_ID,
+        modelId=MODEL_NOVA,
         body=body,
         contentType="application/json",
         accept="application/json"
         )
+        log_event("SUCCESS", f"Calling NOVA model {MODEL_NOVA}", {"error": "", "section": "extract_resume_sections"}, False)
+    except Exception as e:
+        log_event("ERROR", f"Failed calling NOVA model {MODEL_NOVA}", {"error": str(e), "section": "extract_resume_sections"}, True)
+
+    try:
         response_raw = response["body"].read().decode("utf-8").strip()
         response_body = json.loads(response_raw)
         content_text = response_body["output"]["message"]["content"][0]["text"]
@@ -71,15 +67,18 @@ def extract_resume_sections(resume_text):
         else:
             json_string = content_text
 
+        log_event("SUCCESS", f"Parsing resume into JSON sections", {"error": "", "section": "extract_resume_sections"}, True)
         return json.loads(json_string)
     
     except json.JSONDecodeError as jde:
+        log_event("ERROR", f"Parsing resume into JSON sections failed", {"error": str(jde), "section": "extract_resume_sections"}, True)
         return{"error": f"JSON decode error: {jde}"}
             
     except Exception as e:
+        log_event("ERROR", f"Unknown error", {"error": str(e), "section": "extract_resume_sections"}, True)
         return {"error": f"Resume section extraction failed: {e}"}
 
-def embed_resume_sections(sections_dict, bedrock_client, model_id="amazon.titan-embed-text-v2:0"):
+def embed_resume_sections(sections_dict, bedrock_client, model_id=MODEL_TITAN_EMBED):
     """
     Create embeddings for each section of a parsed resume.
 
@@ -117,8 +116,9 @@ def embed_resume_sections(sections_dict, bedrock_client, model_id="amazon.titan-
                 "text": cleaned_text,
                 "embedding": embedding
             }
-
+            log_event("SUCCESS", f"Obtaining embeddings for section '{section}'", {"error": "", "section": "embed_resume_sections"}, True)
         except Exception as e:
+            log_event("ERROR", f"Obtaining embeddings for section '{section}' failed", {"error": str(e), "section": "embed_resume_sections"}, True)
             print(f"❌ Embedding failed for section '{section}': {e}")
             continue
 

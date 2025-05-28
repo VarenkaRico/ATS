@@ -4,23 +4,16 @@ import uuid
 from datetime import datetime
 import os
 from io import BytesIO
+import tempfile
 
+from xhtml2pdf import pisa
 
 import boto3
 from botocore.exceptions import NoCredentialsError
 
 # ==== AWS CONFIG ====
-
-session = boto3.Session(profile_name=os.getenv("AWS_PROFILE", "default"))
-print(f"Using AWS profile: {os.getenv('AWS_PROFILE', 'default')}")
-#session = boto3.Session(profile_name="recruitment-assistant")
-s3 = session.client("s3")
-bedrock = session.client("bedrock-runtime")
-
-#S3_BUCKET = 'recruitment-agent-vrnk'
-S3_BUCKET = os.getenv("S3_BUCKET", "default")
-# ==== JOB DESCRIPTION STEP ====
-MODEL_ID = "amazon.nova-lite-v1:0"
+from utils.aws_clients import s3, bedrock, S3_BUCKET, MODEL_NOVA, MODEL_TITAN_EMBED
+from utils.logger import log_event, upload_log_to_s3
 
 # --- Generate job description ---
 def generate_job_description(role, region, language):
@@ -130,48 +123,50 @@ def generate_job_description(role, region, language):
     })
     try:
         response = bedrock.invoke_model(
-            modelId=MODEL_ID,
+            modelId=MODEL_NOVA,
             body=body,
             accept="application/json",
             contentType="application/json"
         )
+        log_event("SUCCESS", f"Calling {MODEL_NOVA}", {"error": "", "section": "generate_job_description"}, False)
+    except:
+        log = log_event("ERROR", f"Failed calling NOVA model {MODEL_NOVA}", {"error": str(e), "section": "generate_job_description"})
+        return log
+
+    try:
         response_body = json.loads(response.get('body').read().decode('utf-8'))
+        log_event("SUCCESS", "Generation job description", {"error": "", "section": "generate_job_description"}, True)
         return response_body["output"]["message"]["content"][0]["text"]
+    
     except Exception as e:
-        return f"Error: {e}"
+        log = log_event("ERROR", "Failed to generate job description", {"error": str(e), "section": "generate_job_description"}, True)
+
+        return log
     
 #Get sections of the job description to facilitate matching
 def split_job_description_sections(text):
-
-    CANONICAL_HEADERS = [
-    "Job Title",
-    "Job Description",
-    "Key Responsibilities",
-    "Required Qualifications",
-    "Technical Skills",
-    "Soft Skills",
-    "Average Annual Salary Range",
-    "Equal Opportunity Statement",
-    "Application Process"
-]
 
     # Matches **Section Title:**
     pattern = r"\*\*(.*?)\*\*\s*:?[\r\n]+"
     parts = re.split(pattern, text)
     
     sections = {}
-    if len(parts) < 2:
-        return sections  # return empty if nothing matches
+    try:
+        if len(parts) < 2:
+            log_event("WARNING", "No parts in job description identified", {"error": "", "section": "split_job_description_sections"}, True)
+            return sections  # return empty if nothing matches
+        
+    except Exception as e:
+        log = log_event("ERROR", "Failed to split job description", {"error": str(e), "section": "split_job_description_sections"}, True)
+        return log
 
     # parts[0] is the text before the first header (often empty)
     for i in range(1, len(parts), 2):
         
         section_key = parts[i].strip().rstrip(":")
         section_text = parts[i + 1].strip() if i + 1 < len(parts) else ""
-        #matched = difflib.get_close_matches(raw_section, CANONICAL_HEADERS, n=1, cutoff=0.6)
-        #section_key = matched[0] if matched else raw_section
         sections[section_key] = section_text
-
+    log_event("SUCCESS", "Spliting Job Description", {"error": "", "section": "split_job_description_sections"}, True)
     return sections
 
 def get_section_embeddings_dict(dict_section):
@@ -197,23 +192,28 @@ def get_section_embeddings_dict(dict_section):
             continue
 
         try:
-            print(f"Embedding section: {section} ({len(cleaned)} chars)")
             response = bedrock.invoke_model(
-                modelId = "amazon.titan-embed-text-v2:0",
+                modelId = MODEL_TITAN_EMBED,
                 body = json.dumps({"inputText":cleaned}),
                 contentType = "application/json",
                 accept="application/json"
             )
+            log_event("SUCCESS", f"Calling Titan {MODEL_TITAN_EMBED}", {"error": "", "section": "get_section_embeddings_dict"}, False)
 
+        except Exception as e:
+            log_event("ERROR", f"Failed calling {MODEL_TITAN_EMBED}", {"error": str(e), "section": "get_section_embeddings_dict"}, True)
+
+        try:
             result = json.loads(response["body"].read())
 
             dict_result[section] = {
                 "text": cleaned,
                 "embedding": result.get("embedding", [])
             }
+            log_event("SUCCESS", "Generating embeddings", {"error": "", "section": "get_section_embeddings_dict"}, True)
 
         except Exception as e:
-            print(f"Error embedding section '{section}':{e}")
+            log_event("ERROR", "Generating embeddings failed", {"error": str(e), "section": "get_section_embeddings_dict"}, True)
             continue
     return dict_result
 
@@ -238,33 +238,45 @@ def save_job_description_to_json(role, region, language, chunks, s3_key="job_des
         "chunks": chunks
     }
 
+    # Try downloading existing JSON from S3
     try:
-        # Try downloading existing JSON from S3
-        try:
-            s3_object = s3.get_object(Bucket=S3_BUCKET, Key=s3_key)
-            data = json.loads(s3_object["Body"].read().decode("utf-8"))
-        except s3.exceptions.NoSuchKey:
-            data = {}
+        s3_object = s3.get_object(Bucket=S3_BUCKET, Key=s3_key)
+        data = json.loads(s3_object["Body"].read().decode("utf-8"))
+        log_event("SUCCESS", "Downloading existing job_descriptions JSON file", {"error": "", "section": "save_job_description_to_json"}, False)
+    except s3.exceptions.NoSuchKey:
+        data = {}
+        log_event("WARNING", "No JSON file found", {"error": "", "section": "save_job_description_to_json"}, True)
 
-        # Append new entry
+    # Append new entry
+    try:
         data[unique_id] = entry
-
-        # Upload new JSON directly to S3
+        log_event("SUCCESS", "Appending new Job_Description to JSON", {"error": "", "section": "save_job_description_to_json"}, False)
+    except Exception as e:
+        log_event("ERROR", "Appending new Job_Description to JSON failed", {"error": str(e), "section": "save_job_description_to_json"}, True)
+    
+    # Upload new JSON directly to S3
+    try:
         json_bytes = BytesIO(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
         s3.upload_fileobj(json_bytes, S3_BUCKET, s3_key)
-
+        log_event("SUCCESS", "Uploading updated JSON file with new Job Description", {"error": "", "section": "save_job_description_to_json"}, True)
         return f"✅ Job description saved with ID {unique_id}"
+
     except NoCredentialsError:
         return "❌ AWS credentials not available"
+    
     except Exception as e:
+        log_event("ERROR", "Failed to uplod JSON to S3", {"error": str(e), "section": "save_job_description_to_json"}, True)
         return f"❌ Failed to upload JSON to S3: {e}"
+
+    
 
 # === Cluster CV Vs Vacante, texto CV una vez validada la cercanía de vectores ===
 
 # ==== JOB DESCRIPTION VALIDATION ====
 def validate_job_description(job_description, language):
     prompt = f"""
-        You are a highly experienced Diversity & Inclusion HR auditor. Your goal is to critically evaluate job descriptions to ensure they do not unintentionally exclude qualified candidates.
+        You are a highly experienced Diversity & Inclusion HR auditor. 
+        Your goal is to critically evaluate job descriptions to ensure they do not unintentionally exclude qualified candidates.
 
         Analyze the following job description from the perspective of inclusive hiring and identify any element that could discourage capable individuals from applying.
 
@@ -308,25 +320,29 @@ def validate_job_description(job_description, language):
     })
     try:
         response = bedrock.invoke_model(
-            modelId=MODEL_ID,
+            modelId=MODEL_NOVA,
             body=body,
             accept="application/json",
             contentType="application/json"
         )
         response_body = json.loads(response.get('body').read().decode('utf-8'))
         result_text = response_body["output"]["message"]["content"][0]["text"]
+        log_event("SUCCESS", f"Calling Nova {MODEL_NOVA}", {"error": "", "section": "validate_job_description"}, False)
 
     except Exception as e:
-        return f"Error: {e}"
-    
+        log_event("ERROR", f"Failed calling Nova {MODEL_NOVA}", {"error": str(e), "section": "validate_job_description"}, True)
+
     match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', result_text)
     if match:
         result_text = match.group(1)
 
     try:
         validation_result = json.loads(result_text)
+        log_event("SUCCESS", "Job description validation generated in JSON", {"error": "", "section": "validate_job_description"}, True)
     
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         validation_result = {"result": "Unkown", "reasoning": "Model output could not be parsed", "main_issues_identified": [], "recommendations": []}
+        log_event("ERROR", "Failed to generate job description validation into JSON", {"error": str(e), "section": "validate_job_description"}, True)
 
     return validation_result
+

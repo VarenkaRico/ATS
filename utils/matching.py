@@ -10,18 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ==== AWS CONFIG ====
-
-session = boto3.Session(profile_name=os.getenv("AWS_PROFILE", "default"))
-print(f"Using AWS profile: {os.getenv('AWS_PROFILE', 'default')}")
-#session = boto3.Session(profile_name="recruitment-assistant")
-s3 = session.client("s3")
-bedrock = session.client("bedrock-runtime")
-
-#S3_BUCKET = 'recruitment-agent-vrnk'
-S3_BUCKET = os.getenv("S3_BUCKET", "default")
-# ==== JOB DESCRIPTION STEP ====
-MODEL_ID = "amazon.nova-lite-v1:0"
+from utils.aws_clients import s3, S3_BUCKET
 
 def load_job_descriptions_list(s3_key="job_descriptions/job_descriptions.json"):
     """

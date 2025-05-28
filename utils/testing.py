@@ -2,19 +2,7 @@ import json
 import boto3
 import os
 
-# ==== AWS CONFIG ====
-
-session = boto3.Session(profile_name=os.getenv("AWS_PROFILE", "default"))
-print(f"Using AWS profile: {os.getenv('AWS_PROFILE', 'default')}")
-#session = boto3.Session(profile_name="recruitment-assistant")
-s3 = session.client("s3")
-bedrock = session.client("bedrock-runtime")
-
-#S3_BUCKET = 'recruitment-agent-vrnk'
-S3_BUCKET = os.getenv("S3_BUCKET", "default")
-# ==== JOB DESCRIPTION STEP ====
-MODEL_ID = "amazon.nova-lite-v1:0"
-
+from utils.aws_clients import s3, bedrock, S3_BUCKET, MODEL_NOVA, MODEL_TITAN_EMBED
 
 def generate_test_from_description(description):
     prompt = f"Create a test with no more than 20 questions for this job description: {description} Include both technical and soft skills questions based on the context."
@@ -37,7 +25,7 @@ def generate_test_from_description(description):
     })
     try:
         response = bedrock.invoke_model(
-            modelId= MODEL_ID,
+            modelId= MODEL_NOVA,
             body=body
           )
         response_body = json.loads(response.get('body').read().decode('utf-8'))

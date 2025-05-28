@@ -1,7 +1,6 @@
 # streamlit_recruitment_app.py
 import streamlit as st
 import boto3
-
 import tempfile
 import os
 from botocore.exceptions import NoCredentialsError
@@ -11,29 +10,21 @@ import uuid
 from dotenv import load_dotenv
 
 from utils.job_description import generate_job_description, split_job_description_sections, get_section_embeddings_dict, save_job_description_to_json, validate_job_description
-from utils.general_funcs import upload_to_s3, detect_language
+from utils.general_funcs import upload_to_s3, detect_language, generate_clean_html, generate_pdf_from_html
 from utils.resume import extract_resume_sections, embed_resume_sections, format_section_for_display, save_resume_to_json,parse_resume_to_text
 from utils.matching import load_job_descriptions_list, get_job_chunks, get_matching_resumes, rank_resumes_for_job, compare_job_resume_embeddings,plot_job_based_radar_multi
 from utils.testing import generate_test_from_description
+from utils.logger import log_event
 
 load_dotenv()
 
 # ==== AWS CONFIG ====
-
-session = boto3.Session(profile_name=os.getenv("AWS_PROFILE", "default"))
-print(f"Using AWS profile: {os.getenv('AWS_PROFILE', 'default')}")
-#session = boto3.Session(profile_name="recruitment-assistant")
-s3 = session.client("s3")
-bedrock = session.client("bedrock-runtime")
-
-#S3_BUCKET = 'recruitment-agent-vrnk'
-S3_BUCKET = os.getenv("S3_BUCKET", "default")
-# ==== JOB DESCRIPTION STEP ====
-MODEL_ID = "amazon.nova-lite-v1:0"
+from utils.aws_clients import s3, bedrock, S3_BUCKET, MODEL_NOVA, MODEL_TITAN_EMBED
 
 # ==== STREAMLIT INTERFACE ====
 st.title("AI-Powered Recruitment Assistant MVP")
 tab1, tab2, tab3, tab4 = st.tabs(["Generate Job", "Upload Resumes", "Match", "Test"])
+
 # --- Job Description Generator ---
 with tab1:
     st.header("1. Generate Inclusive Job Description")
@@ -90,7 +81,25 @@ with tab1:
             role_input, region_input, language_input,
             chunks=chunks
         )
+
         st.success(save_message)
+
+    if "sections" in st.session_state and st.button("📄 Generate PDF"):
+        with st.spinner("Generating PDF..."):
+            html = generate_clean_html(
+                st.session_state["sections"],
+                role=role_input,
+                location=region_input,
+                skip_sections = "Average Annual Salary Range in {region}"
+            )
+            pdf_bytes = generate_pdf_from_html(html)
+
+            st.download_button(
+                label="📥 Download",
+                data=pdf_bytes,
+                file_name=f"JobDescription_{role_input}_{region_input}_.pdf",
+                mime="application/pdf"
+            )
 
 # --- Resume Upload ---
 with tab2:
@@ -173,8 +182,21 @@ with tab3:
         job_chunks = get_job_chunks(job_matching_id)
         dict_filtered_resumes = get_matching_resumes(job_matching_id)
 
+        num_resumes = len(dict_filtered_resumes)
+        st.markdown(f"**📄 Total resumes found:** `{num_resumes}`")
+
+        if num_resumes > 0:
+            top_n = st.number_input(
+                "Select number of top resumes to match", 
+                min_value=1, 
+                max_value=num_resumes, 
+                value=min(2, num_resumes),
+                step=1
+            )
+
     if st.button("Match"):
-        ranking_resumes = rank_resumes_for_job(job_chunks, dict_filtered_resumes, top_n=2)
+        ranking_resumes = rank_resumes_for_job(job_chunks, dict_filtered_resumes, top_n)
+        st.session_state["ranking_resumes"] = ranking_resumes
         dict_match_results = {}
 
         for resume in ranking_resumes:
@@ -189,6 +211,44 @@ with tab3:
         job_matching = None
         #st.warning("⚠️ No job descriptions available. Please create and save one first.")
 
+    if "ranking_resumes" in st.session_state and st.button("📥 Download Top Matches (Anonymized PDF)"):
+        merged_html = "<html><body>"
+
+        for match in st.session_state["ranking_resumes"]:
+            resume_id = match["resume_id"]
+            resume_data = dict_filtered_resumes.get(resume_id, {})
+            resume_chunks = resume_data.get("chunks", {})
+
+            sections_text = {
+                k: v["text"]
+                for k, v in resume_chunks.items()
+                if "text" in v
+            }
+
+            resume_html = generate_clean_html(
+                sections=sections_text,
+                role=f"Candidate #{resume_id[:6]}",
+                title="Anonymized Resume",
+                skip_sections=["personal_information", "Personal Information"]
+            )
+
+            body_start = resume_html.find("<body>")
+            body_end = resume_html.find("</body>")
+            merged_html += resume_html[body_start + 6:body_end]
+            merged_html += "<hr>"
+
+        merged_html += "</body></html>"
+
+        pdf_bytes = generate_pdf_from_html(merged_html)
+
+        st.download_button(
+            label="📄 Download Merged Anonymized Resumes",
+            data=pdf_bytes,
+            file_name="anonymized_resumes.pdf",
+            mime="application/pdf"
+        )
+
+        
 # --- Test Generator ---
 with tab4:
     st.header("4. Assessment Generator")

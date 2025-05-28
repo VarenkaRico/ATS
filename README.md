@@ -63,7 +63,16 @@ streamlit run Recruitment_app.py
 ## 📁 Project Structure
 ```bash
 .  
-├── Recruitment_app.py         # Streamlit UI and logic  
+├── Recruitment_app.py        # Streamlit UI and logic  
+├── utils/                    # Helper functions and modular logic      
+    ├── general_funcs.py      # Functions with general purpose      
+    ├── job_description.py    # Job description generator      
+    ├── resume.py             # Resume parser      
+    ├── matching.py           # Resume and job description matching      
+    ├── testing.py            # Test generator      
+    ├── aws_clients.py        # Signing in AWS account and retrieving products      
+    ├── logger.py             # Logging functions      
+    └── __init__.py           # Python module marker
 ├── requirements.txt  
 ├── .env                       # Local AWS credentials & config (not shared)  
 ├── .env.example               # Template for collaborators  
@@ -73,7 +82,7 @@ streamlit run Recruitment_app.py
 
 | Variable     | Description                                  |
 |--------------|----------------------------------------------|
-| `AWS_PROFILE`| AWS CLI profile name with Bedrock/S3 access |
+| `AWS_PROFILE`| AWS CLI profile name with Bedrock/S3 access  |
 | `S3_BUCKET`  | S3 bucket name for storing data              |
 
 The `S3_BUCKET` should be structured as follows:  
@@ -81,9 +90,11 @@ The `S3_BUCKET` should be structured as follows:
 .
 ├── job_descriptions          # The JSON files for job descriptions will be stored here
 │   └── job_descriptions.json # Structured job description data as a JSON object
-└── resumes
+├── resumes
     ├── files                 # The original files uploaded will be stored here
     └── resumes.json          # Structured resume data stored as a JSON object
+└── logs
+    └── logs.json             # Logs registered during usage of the app
 ```
 
 ## 🧠 Agentic Design Philosophy
